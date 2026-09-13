@@ -32,6 +32,7 @@ jobs:
           cp SpriteExtractor.exe dist/
           cp ModoCriadorAdmin.exe dist/
           cp /ucrt64/bin/libsqlite3-0.dll dist/
+          cp /ucrt64/bin/libwinpthread-1.dll dist/
           printf 'SpriteExtractor.exe: coloque ao lado do Tibia.spr ou arraste Tibia.spr sobre o EXE.\nModoCriadorAdmin.exe: feche o servidor, coloque na pasta principal do jogo e escolha ativar/desativar Admin.\n' > dist/LEIA-ME.txt
       - uses: actions/upload-artifact@v4
         with:
