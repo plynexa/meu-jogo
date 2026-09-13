@@ -14,4 +14,4 @@ list(FILTER SOURCES EXCLUDE REGEX "/(admin|gameservers|databasemysql|databasemys
 add_executable(MeuJogoServidor ${SOURCES})
 target_compile_definitions(MeuJogoServidor PRIVATE WINDOWS _CONSOLE __USE_SQLITE__ __USE_ZLIB__ BOOST_BIND_GLOBAL_PLACEHOLDERS NOMINMAX)
 target_compile_options(MeuJogoServidor PRIVATE -Wno-deprecated-declarations)
-target_link_libraries(MeuJogoServidor PRIVATE PkgConfig::XML2 PkgConfig::LUA PkgConfig::SQLITE OpenSSL::Crypto ZLIB::ZLIB Boost::thread Boost::filesystem Boost::regex Boost::date_time ws2_32 winmm)
+target_link_libraries(MeuJogoServidor PRIVATE PkgConfig::XML2 PkgConfig::LUA PkgConfig::SQLITE OpenSSL::Crypto ZLIB::ZLIB Boost::thread Boost::filesystem Boost::regex Boost::date_time ws2_32 mswsock winmm)
