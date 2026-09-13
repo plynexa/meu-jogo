@@ -5,6 +5,7 @@ on:
     paths:
       - '.github/workflows/windows.yml'
       - 'servidor/**'
+      - 'ferramentas/aplicar_compatibilidade_boost.sh'
       - 'ferramentas/build-revision.txt'
 permissions:
   contents: read
@@ -32,6 +33,8 @@ jobs:
             mingw-w64-ucrt-x86_64-lua51
             mingw-w64-ucrt-x86_64-sqlite3
             mingw-w64-ucrt-x86_64-zlib
+      - name: Aplicar compatibilidade Boost atual
+        run: bash ferramentas/aplicar_compatibilidade_boost.sh
       - name: Configurar
         run: cmake -S servidor -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
       - name: Compilar
