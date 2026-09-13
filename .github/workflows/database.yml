@@ -1,0 +1,36 @@
+name: Gerar banco SQLite de teste
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/database.yml'
+      - 'servidor/schema-reference.sql'
+      - 'ferramentas/preparar_banco.py'
+permissions:
+  contents: read
+jobs:
+  banco:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Criar banco
+        run: python ferramentas/preparar_banco.py meujogo.s3db
+      - name: Verificar banco
+        run: |
+          python - <<'PY'
+          import sqlite3
+          db=sqlite3.connect('meujogo.s3db')
+          print('integrity:', db.execute('PRAGMA integrity_check').fetchone()[0])
+          print('db_version:', db.execute("SELECT value FROM server_config WHERE config='db_version'").fetchone()[0])
+          print('conta:', db.execute('SELECT name FROM accounts WHERE id=1').fetchone()[0])
+          print('personagem:', db.execute('SELECT name FROM players WHERE id=1').fetchone()[0])
+          db.close()
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MeuJogo-Banco-SQLite
+          path: meujogo.s3db
+          if-no-files-found: error
