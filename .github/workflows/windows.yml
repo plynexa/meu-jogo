@@ -4,7 +4,7 @@ on:
   push:
     paths:
       - '.github/workflows/windows.yml'
-      - 'servidor/CMakeLists.txt'
+      - 'servidor/**'
       - 'ferramentas/build-revision.txt'
 permissions:
   contents: read
