@@ -6,6 +6,7 @@ on:
       - '.github/workflows/windows.yml'
       - 'servidor/**'
       - 'ferramentas/aplicar_compatibilidade_boost.sh'
+      - 'ferramentas/preparar_banco.py'
       - 'ferramentas/build-revision.txt'
 permissions:
   contents: read
@@ -18,6 +19,9 @@ jobs:
         shell: msys2 {0}
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
       - uses: msys2/setup-msys2@v2
         with:
           msystem: UCRT64
@@ -46,7 +50,12 @@ jobs:
           mkdir -p dist/Servidor
           cp build/MeuJogoServidor.exe dist/Servidor/
           cp /ucrt64/bin/*.dll dist/Servidor/
-          printf 'Compilacao do servidor. Banco, mapa e teste de login ainda exigem validacao.\n' > dist/LEIA.txt
+      - name: Criar banco SQLite inicial
+        shell: pwsh
+        run: python ferramentas/preparar_banco.py dist/Servidor/meujogo.s3db
+      - name: Criar aviso do pacote
+        shell: pwsh
+        run: "Set-Content -Path dist/LEIA.txt -Value 'Servidor Windows compilado com banco SQLite inicial. Os dados, mapa e cliente sao adicionados no pacote de teste completo.'"
       - uses: actions/upload-artifact@v4
         with:
           name: MeuJogo-Servidor-Windows-preparacao
