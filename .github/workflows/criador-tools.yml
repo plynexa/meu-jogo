@@ -23,19 +23,21 @@ jobs:
             mingw-w64-ucrt-x86_64-gcc
             mingw-w64-ucrt-x86_64-sqlite3
       - name: Compilar extrator de sprites
-        run: g++ -O2 -std=c++17 -static-libgcc -static-libstdc++ ferramentas/criador/SpriteExtractor.cpp -o SpriteExtractor.exe
+        run: g++ -O2 -std=c++17 -static ferramentas/criador/SpriteExtractor.cpp -o SpriteExtractor.exe
       - name: Compilar modo criador admin
-        run: g++ -O2 -std=c++17 -static-libgcc -static-libstdc++ ferramentas/criador/ModoCriadorAdmin.cpp -lsqlite3 -o ModoCriadorAdmin.exe
+        run: g++ -O2 -std=c++17 -static ferramentas/criador/ModoCriadorAdmin.cpp -lsqlite3 -o ModoCriadorAdmin.exe
+      - name: Verificar dependencias externas
+        run: |
+          echo 'Dependencias do ModoCriadorAdmin:'
+          objdump -p ModoCriadorAdmin.exe | grep 'DLL Name' || true
       - name: Montar pacote
         run: |
           mkdir -p dist
           cp SpriteExtractor.exe dist/
           cp ModoCriadorAdmin.exe dist/
-          cp /ucrt64/bin/libsqlite3-0.dll dist/
-          cp /ucrt64/bin/libwinpthread-1.dll dist/
-          printf 'SpriteExtractor.exe: coloque ao lado do Tibia.spr ou arraste Tibia.spr sobre o EXE.\nModoCriadorAdmin.exe: feche o servidor, coloque na pasta principal do jogo e escolha ativar/desativar Admin.\n' > dist/LEIA-ME.txt
+          printf 'Executaveis compilados estaticamente. Nao exigem DLL do MSYS2 ao lado.\nModoCriadorAdmin.exe: feche o servidor antes de alterar o banco.\n' > dist/LEIA-ME.txt
       - uses: actions/upload-artifact@v4
         with:
-          name: MeuJogo-Ferramentas-Criador
+          name: MeuJogo-Ferramentas-Criador-Estaticas
           path: dist/
           if-no-files-found: error
