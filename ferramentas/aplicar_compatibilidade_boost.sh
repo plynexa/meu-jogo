@@ -2,9 +2,11 @@
 set -euo pipefail
 
 arquivo="servidor/src/connection.cpp"
+servidor="servidor/src/server.cpp"
 
-# Boost.Asio atual removeu membros antigos de io_context; use a funcao livre.
+# Boost.Asio atual removeu membros antigos de io_context; use as funcoes livres.
 sed -i 's/m_service\.dispatch(boost::bind(&Connection::onStop, this));/boost::asio::dispatch(m_service, boost::bind(\&Connection::onStop, this));/' "$arquivo"
+sed -i 's/m_io_service\.post(boost::bind(&ServicePort::close, it->second));/boost::asio::post(m_io_service, boost::bind(\&ServicePort::close, it->second));/' "$servidor"
 
 # Boost.DateTime atual nao trata enum anonimo como tipo integral neste construtor.
 sed -i 's/boost::posix_time::seconds(Connection::readTimeout)/boost::posix_time::seconds(static_cast<int64_t>(Connection::readTimeout))/g' "$arquivo"
