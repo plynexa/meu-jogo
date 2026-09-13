@@ -34,3 +34,4 @@ jobs:
           name: MeuJogo-Banco-SQLite
           path: meujogo.s3db
           if-no-files-found: error
+# workflow separado para gerar o banco sem recompilar o servidor
