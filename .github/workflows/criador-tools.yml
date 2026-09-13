@@ -1,0 +1,40 @@
+name: Compilar ferramentas do criador
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/criador-tools.yml'
+      - 'ferramentas/criador/**'
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: windows-2022
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-sqlite3
+      - name: Compilar extrator de sprites
+        run: g++ -O2 -std=c++17 -static-libgcc -static-libstdc++ ferramentas/criador/SpriteExtractor.cpp -o SpriteExtractor.exe
+      - name: Compilar modo criador admin
+        run: g++ -O2 -std=c++17 -static-libgcc -static-libstdc++ ferramentas/criador/ModoCriadorAdmin.cpp -lsqlite3 -o ModoCriadorAdmin.exe
+      - name: Montar pacote
+        run: |
+          mkdir -p dist
+          cp SpriteExtractor.exe dist/
+          cp ModoCriadorAdmin.exe dist/
+          cp /ucrt64/bin/libsqlite3-0.dll dist/
+          printf 'SpriteExtractor.exe: coloque ao lado do Tibia.spr ou arraste Tibia.spr sobre o EXE.\nModoCriadorAdmin.exe: feche o servidor, coloque na pasta principal do jogo e escolha ativar/desativar Admin.\n' > dist/LEIA-ME.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MeuJogo-Ferramentas-Criador
+          path: dist/
+          if-no-files-found: error
