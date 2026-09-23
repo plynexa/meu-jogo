@@ -1,0 +1,103 @@
+name: Build OTServBR 12.30 Teste
+
+on:
+  push:
+    branches:
+      - build-otservbr-1230
+    paths:
+      - '.github/workflows/build-otservbr-1230.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    runs-on: windows-2022
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout repositório de controle
+        uses: actions/checkout@v4
+
+      - name: Obter core histórico OTServBR (último pré-12.40)
+        shell: pwsh
+        run: |
+          git clone --filter=blob:none --no-checkout https://github.com/opentibiabr/otservbr-global-archived.git upstream
+          Set-Location upstream
+          git sparse-checkout init --cone
+          git sparse-checkout set src cmake vc14
+          git checkout 8eeebe7060e48d365a6c044a43793bda42f9b785 -- src cmake vc14 CMakeLists.txt
+          git rev-parse HEAD
+
+      - name: Adaptar identificação para 12.30
+        shell: pwsh
+        run: |
+          $p = 'upstream/src/definitions.h'
+          $s = Get-Content $p -Raw
+          $s = $s.Replace('CLIENT_VERSION = 1220', 'CLIENT_VERSION = 1230')
+          $s = $s.Replace('CLIENT_VERSION_STR = "12.20"', 'CLIENT_VERSION_STR = "12.30"')
+          Set-Content -Path $p -Value $s -Encoding UTF8
+          Select-String -Path $p -Pattern 'CLIENT_VERSION'
+
+      - name: Instalar dependências C++
+        shell: pwsh
+        run: |
+          & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install `
+            boost-system:x64-windows `
+            boost-filesystem:x64-windows `
+            boost-iostreams:x64-windows `
+            boost-date-time:x64-windows `
+            cryptopp:x64-windows `
+            libmariadb:x64-windows `
+            luajit:x64-windows `
+            pugixml:x64-windows
+
+      - name: Configurar CMake
+        shell: pwsh
+        run: |
+          cmake -S upstream -B build1230 -A x64 `
+            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" `
+            -DUSE_LUAJIT=ON
+
+      - name: Compilar Release
+        shell: pwsh
+        run: cmake --build build1230 --config Release --parallel 2
+
+      - name: Localizar executável e montar runtime
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          $exe = Get-ChildItem -Path build1230 -Recurse -Filter '*.exe' | Where-Object { $_.Name -match 'otbr|otservbr|forgotten' } | Select-Object -First 1
+          if (-not $exe) { throw 'Executável do servidor não encontrado.' }
+          Copy-Item $exe.FullName 'dist/otservbr-1230.exe'
+          $bin = Join-Path $env:VCPKG_INSTALLATION_ROOT 'installed/x64-windows/bin'
+          if (Test-Path $bin) { Copy-Item "$bin/*.dll" dist/ -ErrorAction SilentlyContinue }
+          Copy-Item 'upstream/src/definitions.h' 'dist/definitions-build.txt'
+          @"
+          Build de compatibilidade OTServBR para teste com cliente 12.30.
+          Core histórico: 8eeebe7060e48d365a6c044a43793bda42f9b785 (último estado antes do commit de protocolo 12.40).
+          Constantes de versão alteradas de 12.20 para 12.30 para o teste.
+          Este artefato NÃO contém mapa/datapack; será combinado com o datapack já auditado no Google Drive.
+          "@ | Set-Content 'dist/BUILD-INFO.txt' -Encoding UTF8
+
+      - name: Teste estrutural do executável
+        shell: pwsh
+        run: |
+          if (-not (Test-Path 'dist/otservbr-1230.exe')) { throw 'EXE ausente' }
+          $size = (Get-Item 'dist/otservbr-1230.exe').Length
+          if ($size -lt 500000) { throw "EXE pequeno demais: $size bytes" }
+          Write-Host "Executável gerado: $size bytes"
+          & dumpbin /headers 'dist/otservbr-1230.exe' | Select-String 'machine|subsystem' | Select-Object -First 10
+
+      - name: Empacotar
+        shell: pwsh
+        run: Compress-Archive -Path 'dist/*' -DestinationPath 'OTServBR-12.30-Windows-Teste.zip' -Force
+
+      - name: Publicar artefato
+        uses: actions/upload-artifact@v4
+        with:
+          name: OTServBR-12.30-Windows-Teste
+          path: OTServBR-12.30-Windows-Teste.zip
+          if-no-files-found: error
+          retention-days: 7
