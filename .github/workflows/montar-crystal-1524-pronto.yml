@@ -1,0 +1,312 @@
+name: Montar Crystal 15.24 pronto para teste
+
+on:
+  push:
+    branches:
+      - fix-crystal-1524-package
+    paths:
+      - '.github/workflows/montar-crystal-1524-pronto.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  montar:
+    runs-on: windows-2022
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout controle
+        uses: actions/checkout@v4
+        with:
+          path: controle
+
+      - name: Baixar fonte completa Crystal Server 4.1.8 / protocolo 15.24
+        uses: actions/checkout@v4
+        with:
+          repository: zimbadev/crystalserver
+          ref: 4.1.8
+          path: crystal-src
+          lfs: true
+
+      - name: Baixar cliente oficial correspondente 15.24.eb0021
+        uses: actions/checkout@v4
+        with:
+          repository: zimbadev/gameclient
+          ref: 15.24.eb0021
+          path: client-src
+          lfs: true
+
+      - name: Baixar binário oficial Crystal Server 4.1.8
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri 'https://github.com/zimbadev/crystalserver/releases/download/4.1.8/crystalserver.rar' -OutFile 'crystalserver.rar'
+          if ((Get-Item 'crystalserver.rar').Length -lt 1000000) { throw 'Download do binário do servidor parece inválido.' }
+
+      - name: Montar servidor completo
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force 'pacote/01 - Servidor Crystal 15.24' | Out-Null
+          & 7z x 'crystalserver.rar' "-opacote/01 - Servidor Crystal 15.24" -y | Out-Host
+
+          Copy-Item 'crystal-src/data' 'pacote/01 - Servidor Crystal 15.24/data' -Recurse -Force
+          Copy-Item 'crystal-src/data-global' 'pacote/01 - Servidor Crystal 15.24/data-global' -Recurse -Force
+          if (Test-Path 'crystal-src/data-crystal') {
+            Copy-Item 'crystal-src/data-crystal' 'pacote/01 - Servidor Crystal 15.24/data-crystal' -Recurse -Force
+          }
+          Copy-Item 'crystal-src/schema.sql' 'pacote/01 - Servidor Crystal 15.24/schema.sql' -Force
+          Copy-Item 'crystal-src/key.pem' 'pacote/01 - Servidor Crystal 15.24/key.pem' -Force
+          Copy-Item 'crystal-src/config.lua.dist' 'pacote/01 - Servidor Crystal 15.24/config.lua' -Force
+          Copy-Item 'crystal-src/LICENSE' 'pacote/01 - Servidor Crystal 15.24/LICENSE-CrystalServer.txt' -Force
+
+          $cfg = 'pacote/01 - Servidor Crystal 15.24/config.lua'
+          $s = Get-Content $cfg -Raw
+          $s = [regex]::Replace($s, '(?m)^ip\s*=\s*.*$', 'ip = "127.0.0.1"')
+          $s = [regex]::Replace($s, '(?m)^mysqlHost\s*=\s*.*$', 'mysqlHost = "127.0.0.1"')
+          $s = [regex]::Replace($s, '(?m)^mysqlUser\s*=\s*.*$', 'mysqlUser = "root"')
+          $s = [regex]::Replace($s, '(?m)^mysqlPass\s*=\s*.*$', 'mysqlPass = ""')
+          $s = [regex]::Replace($s, '(?m)^mysqlDatabase\s*=\s*.*$', 'mysqlDatabase = "crystalserver"')
+          $s = [regex]::Replace($s, '(?m)^mysqlPort\s*=\s*.*$', 'mysqlPort = 3306')
+          $s = [regex]::Replace($s, '(?m)^mysqlDatabaseBackup\s*=\s*.*$', 'mysqlDatabaseBackup = false')
+          Set-Content -Path $cfg -Value $s -Encoding UTF8
+
+          @'
+          @echo off
+          setlocal
+          title Meu Jogo - Crystal Server 15.24
+          cd /d "%~dp0"
+
+          echo ================================================
+          echo   MEU JOGO - CRYSTAL SERVER 15.24 - LOCAL
+          echo ================================================
+          echo.
+
+          if not exist "config.lua" (
+            echo [ERRO] config.lua ausente.
+            pause
+            exit /b 1
+          )
+          if not exist "data-global\world\crystalMap.otbm" (
+            echo [ERRO] Mapa crystalMap.otbm ausente.
+            pause
+            exit /b 1
+          )
+          if not exist "schema.sql" (
+            echo [ERRO] schema.sql ausente.
+            pause
+            exit /b 1
+          )
+
+          set "MYSQL=C:\xampp\mysql\bin\mysql.exe"
+          set "MYSQLADMIN=C:\xampp\mysql\bin\mysqladmin.exe"
+
+          if not exist "%MYSQL%" (
+            echo [ERRO] XAMPP nao encontrado em C:\xampp.
+            echo O servidor esta pronto, mas este launcher espera o XAMPP nesse caminho.
+            pause
+            exit /b 1
+          )
+
+          "%MYSQLADMIN%" -h 127.0.0.1 -u root ping >nul 2>&1
+          if errorlevel 1 (
+            echo [INFO] Iniciando MySQL do XAMPP...
+            if exist "C:\xampp\mysql_start.bat" start "XAMPP MySQL" /min "C:\xampp\mysql_start.bat"
+            timeout /t 6 /nobreak >nul
+          )
+
+          "%MYSQLADMIN%" -h 127.0.0.1 -u root ping >nul 2>&1
+          if errorlevel 1 (
+            echo [ERRO] MySQL do XAMPP nao respondeu.
+            echo Abra o XAMPP Control Panel, clique START em MySQL e execute este arquivo novamente.
+            pause
+            exit /b 1
+          )
+
+          echo [OK] MySQL esta ativo.
+          "%MYSQL%" -h 127.0.0.1 -u root -e "CREATE DATABASE IF NOT EXISTS crystalserver CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+          if errorlevel 1 (
+            echo [ERRO] Nao consegui criar o banco crystalserver com root sem senha.
+            echo Se voce colocou senha no root do XAMPP, edite config.lua e este launcher.
+            pause
+            exit /b 1
+          )
+
+          if not exist ".banco-criado.ok" (
+            echo [INFO] Importando schema.sql na primeira execucao...
+            "%MYSQL%" -h 127.0.0.1 -u root crystalserver < "schema.sql"
+            if errorlevel 1 (
+              echo [ERRO] Falha ao importar schema.sql.
+              pause
+              exit /b 1
+            )
+            echo OK>".banco-criado.ok"
+            echo [OK] Banco inicializado.
+          ) else (
+            echo [OK] Banco ja inicializado anteriormente.
+          )
+
+          echo.
+          echo [INFO] Iniciando Crystal Server...
+          echo Para encerrar normalmente, use Ctrl+C. Se travar, use ENCERRAR SERVIDOR.bat.
+          echo.
+          "crystalserver-x64.exe"
+          echo.
+          echo O processo do servidor terminou.
+          pause
+          '@ | Set-Content 'pacote/01 - Servidor Crystal 15.24/INICIAR SERVIDOR 15.24.bat' -Encoding ASCII
+
+          @'
+          @echo off
+          title Encerrar Crystal Server
+          taskkill /F /IM crystalserver-x64.exe >nul 2>&1
+          if errorlevel 1 (
+            echo O Crystal Server nao estava em execucao.
+          ) else (
+            echo Crystal Server encerrado.
+          )
+          timeout /t 2 /nobreak >nul
+          '@ | Set-Content 'pacote/01 - Servidor Crystal 15.24/ENCERRAR SERVIDOR.bat' -Encoding ASCII
+
+          @'
+          CRYSTAL SERVER 4.1.8 / TIBIA 15.24 - TESTE LOCAL
+
+          Este pacote foi montado com:
+          - runtime completo do repositorio zimbadev/crystalserver na tag 4.1.8;
+          - executavel oficial da release 4.1.8;
+          - config.lua criado a partir do config.lua.dist oficial;
+          - IP 127.0.0.1;
+          - MySQL XAMPP em 127.0.0.1:3306;
+          - usuario root, senha vazia;
+          - banco crystalserver;
+          - mapa e datapack completos.
+
+          PRIMEIRO TESTE:
+          1. Extraia o pacote para uma pasta simples, por exemplo C:\Tibia1524.
+          2. Execute INICIAR SERVIDOR 15.24.bat.
+          3. O launcher tenta iniciar o MySQL do XAMPP, criar o banco e importar schema.sql.
+          4. Depois ele abre o Crystal Server no diretorio correto.
+
+          Se o console ficar preso ao encerrar, use ENCERRAR SERVIDOR.bat.
+          '@ | Set-Content 'pacote/01 - Servidor Crystal 15.24/LEIA PRIMEIRO.txt' -Encoding UTF8
+
+      - name: Montar cliente oficial completo correspondente ao servidor
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force 'pacote/02 - Cliente Oficial 15.24' | Out-Null
+          Get-ChildItem 'client-src' -Force | Where-Object { $_.Name -ne '.git' } | ForEach-Object {
+            Copy-Item $_.FullName 'pacote/02 - Cliente Oficial 15.24/' -Recurse -Force
+          }
+
+          @'
+          @echo off
+          setlocal
+          title Cliente Tibia 15.24 - Crystal
+          cd /d "%~dp0"
+          if not exist "bin\client.exe" (
+            echo [ERRO] bin\client.exe nao encontrado.
+            pause
+            exit /b 1
+          )
+          start "Tibia 15.24" "bin\client.exe"
+          '@ | Set-Content 'pacote/02 - Cliente Oficial 15.24/INICIAR CLIENTE 15.24.bat' -Encoding ASCII
+
+          @'
+          CLIENTE OFICIAL CORRESPONDENTE AO CRYSTAL SERVER 4.1.8
+          Versao: 15.24.eb0021
+          Fonte: zimbadev/gameclient
+
+          Este cliente substitui o ZIP OTClient incompleto que continha apenas EXE/EXP/LIB/PDB.
+          Para o primeiro teste, use INICIAR CLIENTE 15.24.bat.
+          '@ | Set-Content 'pacote/02 - Cliente Oficial 15.24/LEIA PRIMEIRO.txt' -Encoding UTF8
+
+      - name: Validar estrutura antes de publicar
+        shell: pwsh
+        run: |
+          $server = 'pacote/01 - Servidor Crystal 15.24'
+          $client = 'pacote/02 - Cliente Oficial 15.24'
+          $required = @(
+            "$server/crystalserver-x64.exe",
+            "$server/config.lua",
+            "$server/schema.sql",
+            "$server/key.pem",
+            "$server/data-global/world/crystalMap.otbm",
+            "$server/data-global/world/crystal-spawn.xml",
+            "$client/bin/client.exe",
+            "$client/package.json",
+            "$client/assets.json"
+          )
+          foreach ($f in $required) {
+            if (-not (Test-Path $f)) { throw "Arquivo obrigatorio ausente: $f" }
+            Write-Host "[OK] $f"
+          }
+
+          $mapSize = (Get-Item "$server/data-global/world/crystalMap.otbm").Length
+          $clientSize = (Get-Item "$client/bin/client.exe").Length
+          $serverSize = (Get-Item "$server/crystalserver-x64.exe").Length
+          Write-Host "Mapa: $mapSize bytes"
+          Write-Host "Client.exe: $clientSize bytes"
+          Write-Host "Servidor.exe: $serverSize bytes"
+          if ($mapSize -lt 10000000) { throw 'Mapa parece ser apenas ponteiro LFS ou arquivo incompleto.' }
+          if ($clientSize -lt 10000000) { throw 'client.exe parece incompleto.' }
+          if ($serverSize -lt 1000000) { throw 'crystalserver-x64.exe parece incompleto.' }
+
+      - name: Testar abertura do servidor ate a etapa de banco
+        shell: pwsh
+        run: |
+          $wd = (Resolve-Path 'pacote/01 - Servidor Crystal 15.24').Path
+          $log = Join-Path $env:RUNNER_TEMP 'server-test.log'
+          $err = Join-Path $env:RUNNER_TEMP 'server-test.err.log'
+          $p = Start-Process -FilePath (Join-Path $wd 'crystalserver-x64.exe') -WorkingDirectory $wd -RedirectStandardOutput $log -RedirectStandardError $err -PassThru
+          Start-Sleep -Seconds 12
+          if (-not $p.HasExited) {
+            Stop-Process -Id $p.Id -Force
+          }
+          $txt = ''
+          if (Test-Path $log) { $txt += (Get-Content $log -Raw -ErrorAction SilentlyContinue) }
+          if (Test-Path $err) { $txt += (Get-Content $err -Raw -ErrorAction SilentlyContinue) }
+          Write-Host $txt
+          if ($txt -match 'cannot open config.lua|Cannot load: config.lua') { throw 'Teste falhou: servidor ainda nao encontra config.lua.' }
+          if ($txt -match 'crystalMap.otbm.*No such file|cannot.*crystalMap') { throw 'Teste falhou: mapa ausente/inacessivel.' }
+          Write-Host '[OK] Servidor passou do erro original de config.lua. Falha de banco e aceitavel no runner sem XAMPP.'
+
+      - name: Testar inicializacao basica do cliente
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          $wd = (Resolve-Path 'pacote/02 - Cliente Oficial 15.24').Path
+          $exe = Join-Path $wd 'bin/client.exe'
+          $p = Start-Process -FilePath $exe -WorkingDirectory $wd -PassThru
+          Start-Sleep -Seconds 8
+          if ($p.HasExited) {
+            Write-Warning "Cliente encerrou no ambiente sem desktop do GitHub Actions com codigo $($p.ExitCode). A estrutura do runtime ja foi validada."
+          } else {
+            Write-Host '[OK] Processo do cliente abriu e permaneceu ativo por 8 segundos.'
+            Stop-Process -Id $p.Id -Force
+          }
+
+      - name: Gerar ZIPs separados
+        shell: pwsh
+        run: |
+          & 7z a -tzip 'Crystal-Server-15.24-PRONTO-XAMPP.zip' '.\pacote\01 - Servidor Crystal 15.24\*' -mx=5 | Out-Host
+          & 7z a -tzip 'Cliente-Oficial-15.24-Crystal.zip' '.\pacote\02 - Cliente Oficial 15.24\*' -mx=5 | Out-Host
+          if (-not (Test-Path 'Crystal-Server-15.24-PRONTO-XAMPP.zip')) { throw 'ZIP do servidor nao foi criado.' }
+          if (-not (Test-Path 'Cliente-Oficial-15.24-Crystal.zip')) { throw 'ZIP do cliente nao foi criado.' }
+
+      - name: Publicar servidor pronto
+        uses: actions/upload-artifact@v4
+        with:
+          name: Crystal-Server-15.24-PRONTO-XAMPP
+          path: Crystal-Server-15.24-PRONTO-XAMPP.zip
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+      - name: Publicar cliente pronto
+        uses: actions/upload-artifact@v4
+        with:
+          name: Cliente-Oficial-15.24-Crystal
+          path: Cliente-Oficial-15.24-Crystal.zip
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
