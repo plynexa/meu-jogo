@@ -14,7 +14,7 @@ permissions:
 jobs:
   build-windows:
     runs-on: windows-2022
-    timeout-minutes: 60
+    timeout-minutes: 90
 
     steps:
       - name: Checkout repositório de controle
@@ -23,11 +23,15 @@ jobs:
       - name: Obter core histórico OTServBR (último pré-12.40)
         shell: pwsh
         run: |
-          git clone --filter=blob:none --no-checkout https://github.com/opentibiabr/otservbr-global-archived.git upstream
+          New-Item -ItemType Directory -Force upstream | Out-Null
           Set-Location upstream
+          git init
+          git remote add origin https://github.com/opentibiabr/otservbr-global-archived.git
+          git -c protocol.version=2 fetch --depth=1 --filter=blob:none origin 8eeebe7060e48d365a6c044a43793bda42f9b785
           git sparse-checkout init --cone
           git sparse-checkout set src cmake vc14
-          git checkout 8eeebe7060e48d365a6c044a43793bda42f9b785 -- src cmake vc14 CMakeLists.txt
+          git checkout --detach FETCH_HEAD
+          if (-not (Test-Path 'src/definitions.h')) { throw 'definitions.h não foi obtido.' }
           git rev-parse HEAD
 
       - name: Adaptar identificação para 12.30
@@ -38,6 +42,8 @@ jobs:
           $s = $s.Replace('CLIENT_VERSION = 1220', 'CLIENT_VERSION = 1230')
           $s = $s.Replace('CLIENT_VERSION_STR = "12.20"', 'CLIENT_VERSION_STR = "12.30"')
           Set-Content -Path $p -Value $s -Encoding UTF8
+          $check = Get-Content $p -Raw
+          if ($check -notmatch 'CLIENT_VERSION = 1230') { throw 'Patch de versão 1230 não aplicado.' }
           Select-String -Path $p -Pattern 'CLIENT_VERSION'
 
       - name: Instalar dependências C++
@@ -78,7 +84,7 @@ jobs:
           Build de compatibilidade OTServBR para teste com cliente 12.30.
           Core histórico: 8eeebe7060e48d365a6c044a43793bda42f9b785 (último estado antes do commit de protocolo 12.40).
           Constantes de versão alteradas de 12.20 para 12.30 para o teste.
-          Este artefato NÃO contém mapa/datapack; será combinado com o datapack já auditado no Google Drive.
+          Datapack/mapa/banco ficam no Google Drive e não são incluídos neste artefato.
           "@ | Set-Content 'dist/BUILD-INFO.txt' -Encoding UTF8
 
       - name: Teste estrutural do executável
