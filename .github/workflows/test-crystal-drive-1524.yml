@@ -14,7 +14,7 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          $url = 'https://sdmntprbrazilsouth.oaiusercontent.com/files/00000000-266c-820e-8d34-07eac84cdedb/raw?se=2026-09-24T22%3A32%3A53Z&sp=r&sv=2026-02-06&sr=b&scid=5bb74fdd-f9b1-53db-be49-55abd2cdb6e8&skoid=86ad43b0-1afa-4d46-a6d6-9e67f7cdc5bc&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-09-24T20%3A50%3A03Z&ske=2026-09-25T20%3A50%3A03Z&sks=b&skv=2026-02-06&sig=da51bbudPmiAzZP%2Bo8iB29dO2Enk88Bjjks2WYXRmtM%3D'
+          $url = 'https://sdmntprbrazilsouth.oaiusercontent.com/files/00000000-d31c-820e-83a8-399399e3d434/raw?se=2026-09-24T22%3A36%3A49Z&sp=r&sv=2026-02-06&sr=b&scid=1eab853f-8bbe-5bd2-8a6a-55d0d047290c&skoid=86ad43b0-1afa-4d46-a6d6-9e67f7cdc5bc&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-09-24T20%3A31%3A52Z&ske=2026-09-25T20%3A31%3A52Z&sks=b&skv=2026-02-06&sig=Osy2%2BM%2BESzdJ6/Z36tVv%2BNEG03tiU2nMCrrJOpONgY4%3D'
           Invoke-WebRequest -Uri $url -OutFile C:\drive-package.zip
           $actual = (Get-FileHash C:\drive-package.zip -Algorithm SHA256).Hash.ToLower()
           $expected = '1913f89f4fefdc4db25f7e571440ae4da1e6d7da83eb2c47ba7c09edc9ec0947'
@@ -44,21 +44,28 @@ jobs:
           Write-Host "Map size: $((Get-Item $map).Length) bytes"
           "SERVER_ROOT=$root" | Out-File -FilePath $env:GITHUB_ENV -Append
 
-      - name: Initialize clean MySQL database on port 3306
+      - name: Download and initialize official portable MariaDB
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          $base = 'C:\Program Files\MySQL\MySQL Server 8.0'
-          $mysqld = Join-Path $base 'bin\mysqld.exe'
-          $mysql = Join-Path $base 'bin\mysql.exe'
-          if (-not (Test-Path $mysqld)) { throw "mysqld.exe not found at $mysqld" }
-          $data = 'C:\mysql-crystal-data'
+          $mariaUrl = 'https://dlm.mariadb.com/4699690/MariaDB/mariadb-11.4.12/winx64-packages/mariadb-11.4.12-winx64.zip'
+          Invoke-WebRequest -Uri $mariaUrl -OutFile C:\mariadb.zip
+          New-Item -ItemType Directory -Force C:\maria | Out-Null
+          & 7z x C:\mariadb.zip '-oC:\maria' -y | Out-Host
+          if ($LASTEXITCODE -ne 0) { throw 'MariaDB ZIP extraction failed' }
+          $install = Get-ChildItem C:\maria -Recurse -Filter mariadb-install-db.exe | Select-Object -First 1
+          if (-not $install) { throw 'mariadb-install-db.exe not found' }
+          $base = $install.Directory.Parent.FullName
+          $data = 'C:\maria-data'
           if (Test-Path $data) { Remove-Item $data -Recurse -Force }
           New-Item -ItemType Directory -Force $data | Out-Null
-          & $mysqld --no-defaults --initialize-insecure "--basedir=$base" "--datadir=$data"
-          if ($LASTEXITCODE -ne 0) { throw "mysqld initialize failed: $LASTEXITCODE" }
-          $dbOut='C:\mysqld-stdout.log'; $dbErr='C:\mysqld-stderr.log'
-          $dbp = Start-Process -FilePath $mysqld -ArgumentList @('--no-defaults',"--basedir=$base","--datadir=$data",'--port=3306','--bind-address=127.0.0.1','--skip-name-resolve') -PassThru -RedirectStandardOutput $dbOut -RedirectStandardError $dbErr
+          $init = Start-Process -FilePath $install.FullName -WorkingDirectory $base -ArgumentList @("--datadir=$data",'--password=','--port=3306','--allow-remote-root-access') -Wait -PassThru -NoNewWindow
+          if ($init.ExitCode -ne 0) { throw "MariaDB initialization failed: $($init.ExitCode)" }
+          $server = Join-Path $base 'bin\mariadbd.exe'
+          $client = Join-Path $base 'bin\mariadb.exe'
+          if (-not (Test-Path $server)) { throw 'mariadbd.exe not found' }
+          $dbOut='C:\maria-stdout.log'; $dbErr='C:\maria-stderr.log'
+          $dbp = Start-Process -FilePath $server -WorkingDirectory $base -ArgumentList @("--defaults-file=$data\my.ini",'--console') -PassThru -RedirectStandardOutput $dbOut -RedirectStandardError $dbErr
           $ready=$false
           for ($i=0; $i -lt 60; $i++) {
             Start-Sleep -Seconds 1
@@ -69,12 +76,15 @@ jobs:
           if (-not $ready) {
             if (Test-Path $dbOut) { Get-Content $dbOut -Tail 100 }
             if (Test-Path $dbErr) { Get-Content $dbErr -Tail 100 }
-            throw 'Clean MySQL instance did not become ready.'
+            throw 'MariaDB did not become ready.'
           }
           Start-Sleep -Seconds 2
-          & $mysql -u root -h 127.0.0.1 --protocol=tcp -e 'SELECT VERSION();'
-          if ($LASTEXITCODE -ne 0) { throw 'Root TCP login failed on clean DB.' }
-          "DBCLI=$mysql" | Out-File -FilePath $env:GITHUB_ENV -Append
+          & $client -u root -h 127.0.0.1 --protocol=tcp -e 'SELECT VERSION();'
+          if ($LASTEXITCODE -ne 0) {
+            if (Test-Path $dbErr) { Get-Content $dbErr -Tail 100 }
+            throw 'MariaDB root TCP login failed.'
+          }
+          "DBCLI=$client" | Out-File -FilePath $env:GITHUB_ENV -Append
           "DBPID=$($dbp.Id)" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       - name: Create database and import exact schema.sql
