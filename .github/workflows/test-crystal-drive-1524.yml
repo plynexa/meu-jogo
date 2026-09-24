@@ -1,0 +1,113 @@
+name: Test exact Crystal 15.24 Drive package
+
+on:
+  push:
+    branches:
+      - tmp/test-crystal-drive-1524
+
+jobs:
+  boot-test:
+    runs-on: windows-2025
+    timeout-minutes: 25
+    steps:
+      - name: Download exact Drive package and verify bytes
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $url = 'https://sdmntprbrazilsouth.oaiusercontent.com/files/00000000-16a4-820e-b4ed-a9d81487f5a7/raw?se=2026-09-24T22%3A19%3A42Z&sp=r&sv=2026-02-06&sr=b&scid=b8fc4bda-34cb-5827-89c6-292928b7ec42&skoid=86ad43b0-1afa-4d46-a6d6-9e67f7cdc5bc&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-09-24T20%3A49%3A59Z&ske=2026-09-25T20%3A49%3A59Z&sks=b&skv=2026-02-06&sig=U57BZZJHQrMPSnPPq6mJTtg5F8D0fDB1QDD4fXoAzpw%3D'
+          Invoke-WebRequest -Uri $url -OutFile C:\drive-package.zip
+          $actual = (Get-FileHash C:\drive-package.zip -Algorithm SHA256).Hash.ToLower()
+          $expected = '1913f89f4fefdc4db25f7e571440ae4da1e6d7da83eb2c47ba7c09edc9ec0947'
+          Write-Host "Drive package SHA256: $actual"
+          if ($actual -ne $expected) { throw "Drive package hash mismatch" }
+
+      - name: Extract package and verify required runtime files
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force C:\outer,C:\server | Out-Null
+          Expand-Archive C:\drive-package.zip C:\outer -Force
+          $inner = Get-ChildItem C:\outer -Recurse -Filter *.zip | Select-Object -First 1
+          if (-not $inner) { throw 'Nested server ZIP not found' }
+          Expand-Archive $inner.FullName C:\server -Force
+          $exe = Get-ChildItem C:\server -Recurse -Filter crystalserver-x64.exe | Select-Object -First 1
+          if (-not $exe) { throw 'crystalserver-x64.exe missing' }
+          $root = $exe.Directory.FullName
+          $required = @('crystalserver-x64.exe','config.lua','schema.sql','key.pem','libmariadb.dll','lua51.dll','pugixml.dll','libprotobuf.dll','libcurl.dll','fmt.dll')
+          foreach ($f in $required) { if (-not (Test-Path (Join-Path $root $f))) { throw "Missing runtime file: $f" } }
+          foreach ($d in @('data','data-crystal','data-global')) { if (-not (Test-Path (Join-Path $root $d))) { throw "Missing runtime directory: $d" } }
+          $map = Join-Path $root 'data-global\world\world.otbm'
+          if (-not (Test-Path $map)) { throw 'world.otbm missing' }
+          Write-Host "Server root: $root"
+          Write-Host "Map size: $((Get-Item $map).Length) bytes"
+          "SERVER_ROOT=$root" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Prepare MariaDB
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Continue'
+          Write-Host 'Existing database services:'
+          Get-Service | Where-Object { $_.Name -match 'mysql|maria' -or $_.DisplayName -match 'mysql|maria' } | Format-Table -AutoSize
+          $cli = Get-Command mariadb.exe -ErrorAction SilentlyContinue
+          if (-not $cli) { $cli = Get-Command mysql.exe -ErrorAction SilentlyContinue }
+          if (-not $cli) {
+            Write-Host 'Installing MariaDB via Chocolatey...'
+            choco install mariadb --yes --no-progress
+          }
+          $candidates = @()
+          $candidates += Get-ChildItem 'C:\Program Files\MariaDB*' -Recurse -Include mariadb.exe,mysql.exe -ErrorAction SilentlyContinue
+          $candidates += Get-ChildItem 'C:\tools' -Recurse -Include mariadb.exe,mysql.exe -ErrorAction SilentlyContinue
+          $cliPath = ($candidates | Select-Object -First 1).FullName
+          if (-not $cliPath) {
+            $cmd = Get-Command mariadb.exe -ErrorAction SilentlyContinue
+            if (-not $cmd) { $cmd = Get-Command mysql.exe -ErrorAction SilentlyContinue }
+            if ($cmd) { $cliPath = $cmd.Source }
+          }
+          if (-not $cliPath) { throw 'MariaDB/MySQL client not found after installation' }
+          Write-Host "DB client: $cliPath"
+          $services = Get-Service | Where-Object { $_.Name -match 'mysql|maria' -or $_.DisplayName -match 'mysql|maria' }
+          foreach ($s in $services) {
+            if ($s.Status -ne 'Running') { try { Start-Service $s.Name -ErrorAction Stop } catch { Write-Host $_ } }
+          }
+          Start-Sleep -Seconds 8
+          $ok = $false
+          try { & $cliPath -u root -e 'SELECT VERSION();'; if ($LASTEXITCODE -eq 0) { $ok = $true } } catch {}
+          if (-not $ok) { throw 'Database is installed but root login without password failed; exact package expects root with blank password.' }
+          "DBCLI=$cliPath" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Create database and import exact schema.sql
+        shell: cmd
+        run: |
+          "%DBCLI%" -u root -e "DROP DATABASE IF EXISTS crystalserver; CREATE DATABASE crystalserver CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+          "%DBCLI%" -u root crystalserver < "%SERVER_ROOT%\schema.sql"
+          "%DBCLI%" -u root -e "SELECT COUNT(*) AS tables_count FROM information_schema.tables WHERE table_schema='crystalserver';"
+
+      - name: Boot exact server and verify ports
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-Location $env:SERVER_ROOT
+          $stdout='C:\crystal-stdout.log'
+          $stderr='C:\crystal-stderr.log'
+          $p = Start-Process -FilePath (Join-Path $env:SERVER_ROOT 'crystalserver-x64.exe') -WorkingDirectory $env:SERVER_ROOT -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+          Write-Host "Started PID $($p.Id)"
+          $login=$false; $game=$false
+          for ($i=0; $i -lt 90; $i++) {
+            Start-Sleep -Seconds 2
+            if ($p.HasExited) { break }
+            try { $login = Test-NetConnection 127.0.0.1 -Port 7171 -InformationLevel Quiet -WarningAction SilentlyContinue } catch {}
+            try { $game = Test-NetConnection 127.0.0.1 -Port 7172 -InformationLevel Quiet -WarningAction SilentlyContinue } catch {}
+            if ($login -and $game) { break }
+          }
+          Write-Host '===== STDOUT ====='
+          if (Test-Path $stdout) { Get-Content $stdout -Tail 300 }
+          Write-Host '===== STDERR ====='
+          if (Test-Path $stderr) { Get-Content $stderr -Tail 300 }
+          Write-Host "Process exited: $($p.HasExited)"
+          if ($p.HasExited) { Write-Host "Exit code: $($p.ExitCode)" }
+          Write-Host "Port 7171 listening: $login"
+          Write-Host "Port 7172 listening: $game"
+          if ($p.HasExited) { throw 'Crystal Server process exited during boot.' }
+          if (-not ($login -and $game)) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue; throw 'Server did not open both 7171 and 7172 during boot window.' }
+          Write-Host 'BOOT_TEST_OK: process alive and login/game ports are listening.'
+          Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
