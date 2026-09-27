@@ -8,13 +8,13 @@ on:
 jobs:
   boot-test:
     runs-on: windows-2025
-    timeout-minutes: 30
+    timeout-minutes: 35
     steps:
       - name: Download exact Drive package and verify bytes
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          $url = 'https://sdmntprbrazilsouth.oaiusercontent.com/files/00000000-d31c-820e-83a8-399399e3d434/raw?se=2026-09-24T22%3A36%3A49Z&sp=r&sv=2026-02-06&sr=b&scid=1eab853f-8bbe-5bd2-8a6a-55d0d047290c&skoid=86ad43b0-1afa-4d46-a6d6-9e67f7cdc5bc&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-09-24T20%3A31%3A52Z&ske=2026-09-25T20%3A31%3A52Z&sks=b&skv=2026-02-06&sig=Osy2%2BM%2BESzdJ6/Z36tVv%2BNEG03tiU2nMCrrJOpONgY4%3D'
+          $url = 'https://sdmntprbrazilsouth.oaiusercontent.com/files/00000000-08fc-820e-872d-0134a961fe42/raw?se=2026-09-27T19%3A23%3A41Z&sp=r&sv=2026-02-06&sr=b&scid=9c4c056f-c5b0-5ea0-a794-d8f46654920d&skoid=86ad43b0-1afa-4d46-a6d6-9e67f7cdc5bc&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-09-27T11%3A42%3A57Z&ske=2026-09-28T11%3A42%3A57Z&sks=b&skv=2026-02-06&sig=vcMcseiGW%2BpenkExoPzirVmdg3kvJbGD3T26vvAQczA%3D'
           Invoke-WebRequest -Uri $url -OutFile C:\drive-package.zip
           $actual = (Get-FileHash C:\drive-package.zip -Algorithm SHA256).Hash.ToLower()
           $expected = '1913f89f4fefdc4db25f7e571440ae4da1e6d7da83eb2c47ba7c09edc9ec0947'
@@ -44,15 +44,18 @@ jobs:
           Write-Host "Map size: $((Get-Item $map).Length) bytes"
           "SERVER_ROOT=$root" | Out-File -FilePath $env:GITHUB_ENV -Append
 
-      - name: Download and initialize official portable MariaDB
+      - name: MariaDB + schema import + real Crystal boot
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
+
+          Write-Host '=== PREPARING OFFICIAL MARIADB ==='
           $mariaUrl = 'https://dlm.mariadb.com/4699690/MariaDB/mariadb-11.4.12/winx64-packages/mariadb-11.4.12-winx64.zip'
           Invoke-WebRequest -Uri $mariaUrl -OutFile C:\mariadb.zip
           New-Item -ItemType Directory -Force C:\maria | Out-Null
           & 7z x C:\mariadb.zip '-oC:\maria' -y | Out-Host
           if ($LASTEXITCODE -ne 0) { throw 'MariaDB ZIP extraction failed' }
+
           $install = Get-ChildItem C:\maria -Recurse -Filter mariadb-install-db.exe | Select-Object -First 1
           if (-not $install) { throw 'mariadb-install-db.exe not found' }
           $base = $install.Directory.Parent.FullName
@@ -61,11 +64,13 @@ jobs:
           New-Item -ItemType Directory -Force $data | Out-Null
           $init = Start-Process -FilePath $install.FullName -WorkingDirectory $base -ArgumentList @("--datadir=$data",'--password=','--port=3306','--allow-remote-root-access') -Wait -PassThru -NoNewWindow
           if ($init.ExitCode -ne 0) { throw "MariaDB initialization failed: $($init.ExitCode)" }
-          $server = Join-Path $base 'bin\mariadbd.exe'
-          $client = Join-Path $base 'bin\mariadb.exe'
-          if (-not (Test-Path $server)) { throw 'mariadbd.exe not found' }
+
+          $dbServer = Join-Path $base 'bin\mariadbd.exe'
+          $dbClient = Join-Path $base 'bin\mariadb.exe'
           $dbOut='C:\maria-stdout.log'; $dbErr='C:\maria-stderr.log'
-          $dbp = Start-Process -FilePath $server -WorkingDirectory $base -ArgumentList @("--defaults-file=$data\my.ini",'--console') -PassThru -RedirectStandardOutput $dbOut -RedirectStandardError $dbErr
+          $dbp = Start-Process -FilePath $dbServer -WorkingDirectory $base -ArgumentList @("--defaults-file=$data\my.ini",'--console') -PassThru -RedirectStandardOutput $dbOut -RedirectStandardError $dbErr
+          Write-Host "MariaDB PID: $($dbp.Id)"
+
           $ready=$false
           for ($i=0; $i -lt 60; $i++) {
             Start-Sleep -Seconds 1
@@ -78,47 +83,49 @@ jobs:
             if (Test-Path $dbErr) { Get-Content $dbErr -Tail 100 }
             throw 'MariaDB did not become ready.'
           }
-          Start-Sleep -Seconds 2
-          & $client -u root -h 127.0.0.1 --protocol=tcp -e 'SELECT VERSION();'
-          if ($LASTEXITCODE -ne 0) {
-            if (Test-Path $dbErr) { Get-Content $dbErr -Tail 100 }
-            throw 'MariaDB root TCP login failed.'
-          }
-          "DBCLI=$client" | Out-File -FilePath $env:GITHUB_ENV -Append
-          "DBPID=$($dbp.Id)" | Out-File -FilePath $env:GITHUB_ENV -Append
+          & $dbClient -u root -h 127.0.0.1 --protocol=tcp -e 'SELECT VERSION();'
+          if ($LASTEXITCODE -ne 0) { throw 'MariaDB root TCP login failed.' }
 
-      - name: Create database and import exact schema.sql
-        shell: cmd
-        run: |
-          "%DBCLI%" -u root -h 127.0.0.1 --protocol=tcp -e "DROP DATABASE IF EXISTS crystalserver; CREATE DATABASE crystalserver CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
-          "%DBCLI%" -u root -h 127.0.0.1 --protocol=tcp crystalserver < "%SERVER_ROOT%\schema.sql"
-          "%DBCLI%" -u root -h 127.0.0.1 --protocol=tcp -e "SELECT COUNT(*) AS tables_count FROM information_schema.tables WHERE table_schema='crystalserver';"
+          Write-Host '=== CREATING DATABASE AND IMPORTING EXACT PACKAGE SCHEMA ==='
+          & $dbClient -u root -h 127.0.0.1 --protocol=tcp -e 'DROP DATABASE IF EXISTS crystalserver; CREATE DATABASE crystalserver CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;'
+          if ($LASTEXITCODE -ne 0) { throw 'Database creation failed.' }
 
-      - name: Boot exact server and verify ports
-        shell: powershell
-        run: |
-          $ErrorActionPreference = 'Stop'
+          $schema = Join-Path $env:SERVER_ROOT 'schema.sql'
+          $import = Start-Process -FilePath $dbClient -ArgumentList @('-u','root','-h','127.0.0.1','--protocol=tcp','crystalserver') -RedirectStandardInput $schema -Wait -PassThru -NoNewWindow
+          if ($import.ExitCode -ne 0) { throw "schema.sql import failed with exit code $($import.ExitCode)" }
+          & $dbClient -u root -h 127.0.0.1 --protocol=tcp -N -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='crystalserver';"
+          if ($LASTEXITCODE -ne 0) { throw 'Schema verification query failed.' }
+
+          Write-Host '=== STARTING EXACT CRYSTAL SERVER FROM DRIVE PACKAGE ==='
           Set-Location $env:SERVER_ROOT
+          Write-Host 'Relevant config lines:'
+          Get-Content (Join-Path $env:SERVER_ROOT 'config.lua') | Select-String -Pattern 'mysqlHost|mysqlUser|mysqlPass|mysqlDatabase|mysqlPort|loginProtocolPort|gameProtocolPort|statusProtocolPort|ip ='
+
           $stdout='C:\crystal-stdout.log'; $stderr='C:\crystal-stderr.log'
           $p = Start-Process -FilePath (Join-Path $env:SERVER_ROOT 'crystalserver-x64.exe') -WorkingDirectory $env:SERVER_ROOT -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
-          Write-Host "Started Crystal PID $($p.Id)"
+          Write-Host "Crystal PID: $($p.Id)"
+
           $login=$false; $game=$false
-          for ($i=0; $i -lt 90; $i++) {
+          for ($i=0; $i -lt 120; $i++) {
             Start-Sleep -Seconds 2
             if ($p.HasExited) { break }
-            try { $login = Test-NetConnection 127.0.0.1 -Port 7171 -InformationLevel Quiet -WarningAction SilentlyContinue } catch {}
-            try { $game = Test-NetConnection 127.0.0.1 -Port 7172 -InformationLevel Quiet -WarningAction SilentlyContinue } catch {}
+            try { $login = Test-NetConnection 127.0.0.1 -Port 7171 -InformationLevel Quiet -WarningAction SilentlyContinue } catch { $login=$false }
+            try { $game = Test-NetConnection 127.0.0.1 -Port 7172 -InformationLevel Quiet -WarningAction SilentlyContinue } catch { $game=$false }
             if ($login -and $game) { break }
           }
+
           Write-Host '===== CRYSTAL STDOUT ====='
-          if (Test-Path $stdout) { Get-Content $stdout -Tail 500 }
+          if (Test-Path $stdout) { Get-Content $stdout -Tail 800 }
           Write-Host '===== CRYSTAL STDERR ====='
-          if (Test-Path $stderr) { Get-Content $stderr -Tail 500 }
-          Write-Host "Process exited: $($p.HasExited)"
-          if ($p.HasExited) { Write-Host "Exit code: $($p.ExitCode)" }
+          if (Test-Path $stderr) { Get-Content $stderr -Tail 800 }
+          Write-Host "Crystal exited: $($p.HasExited)"
+          if ($p.HasExited) { Write-Host "Crystal exit code: $($p.ExitCode)" }
           Write-Host "Port 7171 listening: $login"
           Write-Host "Port 7172 listening: $game"
+
           if ($p.HasExited) { throw 'Crystal Server process exited during boot.' }
-          if (-not ($login -and $game)) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue; throw 'Server did not open both 7171 and 7172 during boot window.' }
-          Write-Host 'BOOT_TEST_OK: exact Drive package is alive and login/game ports are listening.'
+          if (-not ($login -and $game)) { throw 'Crystal stayed alive but did not open both login/game ports during boot window.' }
+
+          Write-Host 'BOOT_TEST_OK: exact Drive package imported its schema and opened login/game ports on Windows with MariaDB.'
           Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+          Stop-Process -Id $dbp.Id -Force -ErrorAction SilentlyContinue
